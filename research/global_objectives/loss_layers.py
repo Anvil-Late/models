@@ -20,7 +20,8 @@ the loss, and a dictionary of internal quantities for customizability.
 
 # Dependency imports
 import numpy
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+#import tensorflow as tf
 
 from global_objectives import util
 
