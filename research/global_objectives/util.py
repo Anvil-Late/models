@@ -77,7 +77,7 @@ def weighted_sigmoid_cross_entropy_with_logits(labels,
     A `Tensor` of the same shape as `logits` with the componentwise
       weighted logistic losses.
   """
-  with tf.name_scope(
+  with tf.compat.v1.name_scope(
       name,
       'weighted_logistic_loss',
       [logits, labels, positive_weights, negative_weights]) as name:
@@ -85,7 +85,7 @@ def weighted_sigmoid_cross_entropy_with_logits(labels,
         labels, logits, positive_weights, negative_weights)
 
     softplus_term = tf.add(tf.maximum(-logits, 0.0),
-                           tf.log(1.0 + tf.exp(-tf.abs(logits))))
+                           tf.compat.v1.log(1.0 + tf.compat.v1.exp(-tf.abs(logits))))
     weight_dependent_factor = (
         negative_weights + (positive_weights - negative_weights) * labels)
     return (negative_weights * (logits - labels * logits) +
@@ -126,7 +126,7 @@ def weighted_hinge_loss(labels,
     A `Tensor` of the same shape as `logits` with the componentwise
       weighted hinge loss.
   """
-  with tf.name_scope(
+  with tf.compat.v1.name_scope(
       name, 'weighted_hinge_loss',
       [logits, labels, positive_weights, negative_weights]) as name:
     labels, logits, positive_weights, negative_weights = prepare_loss_args(
@@ -176,7 +176,7 @@ def weighted_surrogate_loss(labels,
   Raises:
     ValueError: If value of `surrogate_type` is not supported.
   """
-  with tf.name_scope(
+  with tf.compat.v1.name_scope(
       name, 'weighted_loss',
       [logits, labels, surrogate_type, positive_weights,
        negative_weights]) as name:
@@ -262,14 +262,14 @@ def build_label_priors(labels,
 
   # We disable partitioning while constructing dual variables because they will
   # be updated with assign, which is not available for partitioned variables.
-  partitioner = tf.get_variable_scope().partitioner
+  partitioner = tf.compat.v1.get_variable_scope().partitioner
   try:
-    tf.get_variable_scope().set_partitioner(None)
+    tf.compat.v1.get_variable_scope().set_partitioner(None)
     # Create variable and update op for weighted label counts.
-    weighted_label_counts = tf.contrib.framework.model_variable(
+    weighted_label_counts = tf.Variable(
         name='weighted_label_counts',
         shape=[num_labels],
-        dtype=dtype,
+        dtype=dtype , #originally dtype=dtype
         initializer=tf.constant_initializer(
             [positive_pseudocount] * num_labels, dtype=dtype),
         collections=variables_collections,
@@ -278,7 +278,7 @@ def build_label_priors(labels,
         tf.reduce_sum(weights * labels, 0))
 
     # Create variable and update op for the sum of the weights.
-    weight_sum = tf.contrib.framework.model_variable(
+    weight_sum = tf.compat.v1.get_variable(
         name='weight_sum',
         shape=[num_labels],
         dtype=dtype,
@@ -290,7 +290,7 @@ def build_label_priors(labels,
     weight_sum_update = weight_sum.assign_add(tf.reduce_sum(weights, 0))
 
   finally:
-    tf.get_variable_scope().set_partitioner(partitioner)
+    tf.compat.v1.get_variable_scope().set_partitioner(partitioner)
 
   label_priors = tf.div(
       weighted_label_counts_update,
@@ -345,4 +345,4 @@ def get_num_labels(labels_or_logits):
   """Returns the number of labels inferred from labels_or_logits."""
   if labels_or_logits.get_shape().ndims <= 1:
     return 1
-  return labels_or_logits.get_shape()[1].value
+  return labels_or_logits.get_shape()[1]
