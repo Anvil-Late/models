@@ -20,10 +20,10 @@ the loss, and a dictionary of internal quantities for customizability.
 
 # Dependency imports
 import numpy
-import tensorflow.compat.v1 as tf
-#import tensorflow as tf
-
+#import tensorflow.compat.v1 as tf
+import tensorflow as tf
 from global_objectives import util
+
 
 
 def precision_recall_auc_loss(
@@ -103,7 +103,7 @@ def precision_recall_auc_loss(
   Raises:
     ValueError: If `surrogate_type` is not `xent` or `hinge`.
   """
-  with tf.variable_scope(scope,
+  with tf.compat.v1.variable_scope(scope,
                          'precision_recall_auc',
                          [labels, logits, label_priors],
                          reuse=reuse):
@@ -128,7 +128,7 @@ def precision_recall_auc_loss(
         trainable=trainable,
         dual_rate_factor=dual_rate_factor)
     # Create biases with shape [1, num_labels, num_anchors].
-    biases = tf.contrib.framework.model_variable(
+    biases = tf.compat.v1.get_variable(
         name='biases',
         shape=[1, num_labels, num_anchors],
         dtype=logits.dtype,
@@ -153,7 +153,7 @@ def precision_recall_auc_loss(
         surrogate_type=surrogate_type,
         positive_weights=1.0 + lambdas * (1.0 - precision_values),
         negative_weights=lambdas * precision_values)
-    maybe_log2 = tf.log(2.0) if surrogate_type == 'xent' else 1.0
+    maybe_log2 = tf.compat.v1.log(2.0) if surrogate_type == 'xent' else 1.0
     maybe_log2 = tf.cast(maybe_log2, logits.dtype.base_dtype)
     lambda_term = lambdas * (1.0 - precision_values) * label_priors * maybe_log2
     per_anchor_loss = loss - lambda_term
@@ -163,7 +163,7 @@ def precision_recall_auc_loss(
     # but only num_anchors terms are included in the Riemann sum, the
     # effective length of the integration interval is `delta` less than the
     # length of precision_range.
-    scaled_loss = tf.div(per_label_loss,
+    scaled_loss = tf.compat.v1.div(per_label_loss,
                          precision_range[1] - precision_range[0] - delta,
                          name='AUC_Normalize')
     scaled_loss = tf.reshape(scaled_loss, original_shape)
@@ -825,10 +825,10 @@ def _create_dual_variable(name, shape, dtype, initializer, collections,
   """
   # We disable partitioning while constructing dual variables because they will
   # be updated with assign, which is not available for partitioned variables.
-  partitioner = tf.get_variable_scope().partitioner
+  partitioner = tf.compat.v1.get_variable_scope().partitioner
   try:
-    tf.get_variable_scope().set_partitioner(None)
-    dual_variable = tf.contrib.framework.model_variable(
+    tf.compat.v1.get_variable_scope().set_partitioner(None)
+    dual_variable = tf.compat.v1.get_variable(
         name=name,
         shape=shape,
         dtype=dtype,
@@ -836,7 +836,7 @@ def _create_dual_variable(name, shape, dtype, initializer, collections,
         collections=collections,
         trainable=trainable)
   finally:
-    tf.get_variable_scope().set_partitioner(partitioner)
+    tf.compat.v1.get_variable_scope().set_partitioner(partitioner)
   # Using the absolute value enforces nonnegativity.
   dual_value = tf.abs(dual_variable)
 
@@ -870,7 +870,7 @@ def maybe_create_label_priors(label_priors,
         label_priors, name='label_priors', dtype=labels.dtype.base_dtype)
     return tf.squeeze(label_priors)
 
-  label_priors = util.build_label_priors(
+  label_priors = build_label_priors(
       labels,
       weights,
       variables_collections=variables_collections)
@@ -896,7 +896,7 @@ def true_positives_lower_bound(labels, logits, weights, surrogate_type):
   Returns:
     A `Tensor` of shape [num_labels] or [num_labels, num_anchors].
   """
-  maybe_log2 = tf.log(2.0) if surrogate_type == 'xent' else 1.0
+  maybe_log2 = tf.compat.v1.log(2.0) if surrogate_type == 'xent' else 1.0
   maybe_log2 = tf.cast(maybe_log2, logits.dtype.base_dtype)
   if logits.get_shape().ndims == 3 and labels.get_shape().ndims < 3:
     labels = tf.expand_dims(labels, 2)
@@ -924,8 +924,85 @@ def false_positives_upper_bound(labels, logits, weights, surrogate_type):
   Returns:
     A `Tensor` of shape [num_labels] or [num_labels, num_anchors].
   """
-  maybe_log2 = tf.log(2.0) if surrogate_type == 'xent' else 1.0
+  maybe_log2 = tf.compat.v1.log(2.0) if surrogate_type == 'xent' else 1.0
   maybe_log2 = tf.cast(maybe_log2, logits.dtype.base_dtype)
   loss_on_negatives = util.weighted_surrogate_loss(
       labels, logits, surrogate_type, positive_weights=0.0) / maybe_log2
   return tf.reduce_sum(weights *  loss_on_negatives, 0)
+
+def build_label_priors(labels,
+                       weights=None,
+                       positive_pseudocount=1.0,
+                       negative_pseudocount=1.0,
+                       variables_collections=None):
+  """Creates an op to maintain and update label prior probabilities.
+
+  For each label, the label priors are estimated as
+      (P + sum_i w_i y_i) / (P + N + sum_i w_i),
+  where y_i is the ith label, w_i is the ith weight, P is a pseudo-count of
+  positive labels, and N is a pseudo-count of negative labels. The index i
+  ranges over all labels observed during all evaluations of the returned op.
+
+  Args:
+    labels: A `Tensor` with shape [batch_size, num_labels]. Entries should be
+      in [0, 1].
+    weights: Coefficients representing the weight of each label. Must be either
+      a Tensor of shape [batch_size, num_labels] or `None`, in which case each
+      weight is treated as 1.0.
+    positive_pseudocount: Number of positive labels used to initialize the label
+      priors.
+    negative_pseudocount: Number of negative labels used to initialize the label
+      priors.
+    variables_collections: Optional list of collections for created variables.
+
+  Returns:
+    label_priors: An op to update the weighted label_priors. Gives the
+      current value of the label priors when evaluated.
+  """
+  dtype = labels.dtype.base_dtype
+  num_labels = get_num_labels(labels)
+
+  if weights is None:
+    weights = tf.ones_like(labels)
+
+  # We disable partitioning while constructing dual variables because they will
+  # be updated with assign, which is not available for partitioned variables.
+  partitioner = tf.compat.v1.get_variable_scope().partitioner
+  try:
+    tf.compat.v1.get_variable_scope().set_partitioner(None)
+    # Create variable and update op for weighted label counts.
+    weighted_label_counts = tf.compat.v1.get_variable(
+        name='weighted_label_counts',
+        shape=[num_labels],
+        dtype=dtype , #originally dtype=dtype
+        initializer=tf.constant_initializer(
+            [positive_pseudocount] * num_labels),
+        collections=variables_collections,
+        trainable=False)
+    weighted_label_counts_update = weighted_label_counts.assign_add(
+        tf.reduce_sum(weights * labels, 0))
+
+    # Create variable and update op for the sum of the weights.
+    weight_sum = tf.compat.v1.get_variable(
+        name='weight_sum',
+        shape=[num_labels],
+        dtype=dtype,
+        initializer=tf.constant_initializer(
+            [positive_pseudocount + negative_pseudocount] * num_labels),
+        collections=variables_collections,
+        trainable=False)
+    weight_sum_update = weight_sum.assign_add(tf.reduce_sum(weights, 0))
+
+  finally:
+    tf.compat.v1.get_variable_scope().set_partitioner(partitioner)
+
+  label_priors = tf.compat.v1.div(
+      weighted_label_counts_update,
+      weight_sum_update)
+  return label_priors
+
+def get_num_labels(labels_or_logits):
+  """Returns the number of labels inferred from labels_or_logits."""
+  if labels_or_logits.get_shape().ndims <= 1:
+    return 1
+  return labels_or_logits.get_shape()[1]
